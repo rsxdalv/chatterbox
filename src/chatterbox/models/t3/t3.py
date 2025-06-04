@@ -323,6 +323,7 @@ class T3(nn.Module):
         # )
 
         # ---- Initial Forward Pass (no kv_cache yet) ----
+        torch.compiler.cudagraph_mark_step_begin()
         output = self.patched_model(
             inputs_embeds=inputs_embeds,
             past_key_values=None,
@@ -362,7 +363,11 @@ class T3(nn.Module):
             generated_ids = torch.cat([generated_ids, next_token], dim=1)
 
             # Check for EOS token.
-            if next_token.view(-1) == self.hp.stop_speech_token:
+            # if next_token.view(-1) == self.hp.stop_speech_token:
+            #     break
+
+            # Check for EOS token.
+            if next_token.item() == self.hp.stop_speech_token:
                 break
 
             # Get embedding for the new token.
@@ -374,6 +379,7 @@ class T3(nn.Module):
                 next_token_embed = torch.cat([next_token_embed, next_token_embed])
 
             # Forward pass with only the new token and the cached past.
+            torch.compiler.cudagraph_mark_step_begin()
             output = self.patched_model(
                 inputs_embeds=next_token_embed,
                 past_key_values=past,
@@ -385,3 +391,5 @@ class T3(nn.Module):
             past = output.past_key_values
 
             yield next_token
+
+
