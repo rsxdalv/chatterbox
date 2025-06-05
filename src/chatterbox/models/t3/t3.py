@@ -1,13 +1,13 @@
 # Copyright (c) 2025 Resemble AI
 # MIT License
 import logging
-from typing import Union, Optional, List
+from typing import Optional
 
 from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
-from transformers import LlamaModel, LlamaConfig, DynamicCache
+from transformers import LlamaModel, LlamaConfig, StaticCache
 from transformers.generation.logits_process import TopPLogitsWarper, RepetitionPenaltyLogitsProcessor
 
 from .modules.learned_pos_emb import LearnedPositionEmbeddings
@@ -20,6 +20,9 @@ from .inference.alignment_stream_analyzer import AlignmentStreamAnalyzer
 
 
 logger = logging.getLogger(__name__)
+
+
+
 
 
 class AttrDict(dict):
@@ -292,13 +295,14 @@ class T3(nn.Module):
         # )
 
         device = embeds.device
+        batch_size = embeds.size(0)
 
         bos_token = torch.tensor([[self.hp.start_speech_token]], dtype=torch.long, device=device)
-        bos_embed = self.speech_emb(bos_token)  # shape: (B, 1, embed_dim)
+        bos_embed = self.speech_emb(bos_token)  # shape: (1, 1, embed_dim)
         bos_embed = bos_embed + self.speech_pos_emb.get_fixed_embedding(0)
 
-        # batch_size=2 for CFG
-        bos_embed = torch.cat([bos_embed, bos_embed])
+        # Expand to match batch size for consistent shapes
+        bos_embed = bos_embed.expand(batch_size, -1, -1)  # (B, 1, embed_dim)
 
         # Combine condition and BOS token for the initial input if cfg_weight > 0
         if cfg_weight > 0:
@@ -307,33 +311,35 @@ class T3(nn.Module):
             inputs_embeds = embeds
 
         # Track generated token ids; start with the BOS token.
-        generated_ids = bos_token.clone()
+        # Use fixed-size buffer to avoid dynamic shapes that cause CUDA graph recompilation
+        generated_ids = torch.full((batch_size, max_new_tokens + 1), self.hp.stop_speech_token,
+                                 dtype=torch.long, device=device)
+        generated_ids[:, 0] = self.hp.start_speech_token  # Set BOS token
         predicted = []  # To store the predicted tokens
 
         # Instantiate the logits processors.
         top_p_warper = TopPLogitsWarper(top_p=top_p)
         repetition_penalty_processor = RepetitionPenaltyLogitsProcessor(penalty=repetition_penalty)
 
-        # past_key_values = StaticCache(
-        #     config=self.patched_model.config,
-        #     max_batch_size=1,
-        #     max_cache_len=max_new_tokens,
-        #     device=self.patched_model.device,
-        #     dtype=self.patched_model.dtype,
-        # )
+        # Use StaticCache for fixed-size cache to prevent dynamic shapes
+        past = StaticCache(
+            config=self.cfg,
+            max_batch_size=batch_size,
+            max_cache_len=inputs_embeds.size(1) + max_new_tokens,
+            device=device,
+            dtype=inputs_embeds.dtype,
+        )
 
         # ---- Initial Forward Pass (no kv_cache yet) ----
         torch.compiler.cudagraph_mark_step_begin()
         output = self.patched_model(
             inputs_embeds=inputs_embeds,
-            past_key_values=None,
+            past_key_values=past,
             use_cache=True,
             output_attentions=False,
             output_hidden_states=True,
             return_dict=True,
         )
-        # Initialize kv_cache with the full context.
-        past = DynamicCache.from_legacy_cache(output.past_key_values)
 
         # ---- Generation Loop using kv_cache ----
         for i in tqdm(range(max_new_tokens), desc="Sampling", dynamic_ncols=True):
@@ -351,8 +357,10 @@ class T3(nn.Module):
             if temperature != 1.0:
                 logits = logits / temperature
 
-            # Apply repetition penalty and top‑p filtering.
-            logits = repetition_penalty_processor(generated_ids, logits)
+            # Apply repetition penalty and top‑p filtering using fixed-size context
+            # For CFG, use only the first batch element to match logits shape
+            rep_penalty_ids = generated_ids[:1] if cfg_weight > 0.0 else generated_ids
+            logits = repetition_penalty_processor(rep_penalty_ids, logits)
             logits = top_p_warper(None, logits)
 
             # Convert logits to probabilities and sample the next token.
@@ -360,25 +368,24 @@ class T3(nn.Module):
             next_token = torch.multinomial(probs, num_samples=1)  # shape: (B, 1)
 
             predicted.append(next_token)
-            generated_ids = torch.cat([generated_ids, next_token], dim=1)
 
-            # Check for EOS token.
-            # if next_token.view(-1) == self.hp.stop_speech_token:
-            #     break
+            # Update fixed-size buffer at position i+1 (i starts at 0, position 0 has BOS token)
+            generated_ids[:, i + 1] = next_token.squeeze(1)
 
             # Check for EOS token.
             if next_token.item() == self.hp.stop_speech_token:
                 break
 
             # Get embedding for the new token.
-            next_token_embed = self.speech_emb(next_token)
+            next_token_embed = self.speech_emb(next_token)  # (1, 1, embed_dim) - next_token is (1, 1)
             next_token_embed = next_token_embed + self.speech_pos_emb.get_fixed_embedding(i + 1)
 
-            #  For CFG
+            # For CFG, duplicate the embedding to match the original batch size
             if cfg_weight > 0.0:
-                next_token_embed = torch.cat([next_token_embed, next_token_embed])
+                next_token_embed = torch.cat([next_token_embed, next_token_embed], dim=0)  # (2, 1, embed_dim)
 
             # Forward pass with only the new token and the cached past.
+            # next_token_embed has consistent shape matching the cache - no dynamic shapes
             torch.compiler.cudagraph_mark_step_begin()
             output = self.patched_model(
                 inputs_embeds=next_token_embed,
@@ -387,8 +394,7 @@ class T3(nn.Module):
                 output_hidden_states=True,
                 return_dict=True,
             )
-            # Update the kv_cache.
-            past = output.past_key_values
+            # StaticCache is updated in-place, no need to reassign
 
             yield next_token
 

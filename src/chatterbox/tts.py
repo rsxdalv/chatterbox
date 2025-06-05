@@ -219,6 +219,16 @@ class ChatterboxTTS:
         remove_milliseconds_start=25,
         chunk_overlap_method: Literal["zero", "full"] = "zero",
     ):
+        # Monkey patch the apply_rotary_pos_emb function to add cudagraph_mark_step_begin
+        # from transformers.models.llama.modeling_llama import apply_rotary_pos_emb as original_apply_rotary_pos_emb
+        
+        # def patched_apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+        #     torch.compiler.cudagraph_mark_step_begin()
+        #     return original_apply_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim)
+        
+        # import transformers.models.llama.modeling_llama
+        # transformers.models.llama.modeling_llama.apply_rotary_pos_emb = patched_apply_rotary_pos_emb
+        
         if audio_prompt_path:
             self.prepare_conditionals(audio_prompt_path, exaggeration=exaggeration)
         else:
@@ -247,7 +257,9 @@ class ChatterboxTTS:
 
         with torch.inference_mode():
 
+            @torch.profiler.record_function("t3_infer")
             def _t3_infer():
+                # with torch.profiler.record_function("t3_infer"):
                 for token in self.t3.inference(
                     t3_cond=self.conds.t3,
                     text_tokens=text_tokens,
@@ -255,8 +267,10 @@ class ChatterboxTTS:
                     temperature=temperature,
                     cfg_weight=cfg_weight,
                 ):
+                    torch.compiler.cudagraph_mark_step_begin()
                     yield token
             
+            @torch.profiler.record_function("s3gen_infer")
             def speech_to_wav(speech_tokens, previous_length=0):
                 # Extract only the conditional batch.
                 speech_tokens = speech_tokens[0]
@@ -353,3 +367,4 @@ class ChatterboxTTS:
                 tokens_with_eos = torch.cat([tokens, eos_token], dim=1)
                 wav, previous_length = speech_to_wav(tokens_with_eos, previous_length)
                 yield wav
+

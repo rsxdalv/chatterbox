@@ -68,6 +68,7 @@ class T3HuggingfaceBackend(LlamaPreTrainedModel, GenerationMixin):
             "use_cache": use_cache,
         }
 
+    @torch.profiler.record_function("T3HuggingfaceBackend::forward")
     @torch.inference_mode()
     def forward(
         self,
@@ -85,9 +86,7 @@ class T3HuggingfaceBackend(LlamaPreTrainedModel, GenerationMixin):
         :param inputs_embeds: (B, S, C) float32 tensor of conditioning inputs. If past key values are given,
         S should be 1.
         """
-        is_large_input = inputs_embeds.size(1) != 1
-        has_cache = past_key_values is not None and len(past_key_values) > 0
-        assert not (is_large_input and has_cache)
+
         assert return_dict
         assert output_hidden_states
 
@@ -97,9 +96,10 @@ class T3HuggingfaceBackend(LlamaPreTrainedModel, GenerationMixin):
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
+            # output_hidden_states=False,
             return_dict=True,
         )
-        hidden_states = tfmr_out.hidden_states[-1]  # (B, seq, dim)
+        hidden_states = tfmr_out.last_hidden_state  # (B, seq, dim)
 
         logits = self.speech_head(hidden_states)
         # assert inputs_embeds.size(0) == 1 # (disabled for CFG)
