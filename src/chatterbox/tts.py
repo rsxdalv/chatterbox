@@ -221,6 +221,10 @@ class ChatterboxTTS:
         # cache optimization params
         max_new_tokens=1000, 
         max_cache_len=1500, # Affects the T3 speed, hence important
+        # t3 sampling params
+        repetition_penalty=1.2,
+        min_p=0.05,
+        top_p=1.0,
     ):
         if tokens_per_slice is not None or remove_milliseconds is not None or remove_milliseconds_start is not None or chunk_overlap_method is not None:
             print("Streaming by token slices has been discontinued due to audio clipping. Continuing with full generation.")
@@ -259,6 +263,9 @@ class ChatterboxTTS:
                 temperature=temperature,
                 cfg_weight=cfg_weight,
                 max_cache_len=max_cache_len,
+                repetition_penalty=repetition_penalty,
+                min_p=min_p,
+                top_p=top_p,
             )
 
             
