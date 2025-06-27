@@ -297,5 +297,5 @@ class ChatterboxTTS:
                 watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
                 return torch.from_numpy(watermarked_wav).unsqueeze(0)
 
-            yield speech_to_wav(speech_tokens)
+            return speech_to_wav(speech_tokens)
 
