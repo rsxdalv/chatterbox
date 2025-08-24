@@ -77,6 +77,7 @@ class T3HuggingfaceBackend(LlamaPreTrainedModel, GenerationMixin):
         use_cache=True,
         output_attentions=False,
         cache_position=None,
+        max_position=None,
     ):
         """
         This is a method used by huggingface's generate() method.
@@ -95,6 +96,7 @@ class T3HuggingfaceBackend(LlamaPreTrainedModel, GenerationMixin):
             output_hidden_states=False,
             return_dict=False,
             cache_position=cache_position,
+            max_position=max_position,
         )
         # Top-level sompilation may require .clone() here
         hidden_states = tfmr_out[0]
