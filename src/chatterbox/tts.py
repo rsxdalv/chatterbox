@@ -225,6 +225,7 @@ class ChatterboxTTS:
         repetition_penalty=1.2,
         min_p=0.05,
         top_p=1.0,
+        t3_params={},
     ):
         if tokens_per_slice is not None or remove_milliseconds is not None or remove_milliseconds_start is not None or chunk_overlap_method is not None:
             print("Streaming by token slices has been discontinued due to audio clipping. Continuing with full generation.")
@@ -241,7 +242,8 @@ class ChatterboxTTS:
                 speaker_emb=_cond.speaker_emb,
                 cond_prompt_speech_tokens=_cond.cond_prompt_speech_tokens,
                 emotion_adv=exaggeration * torch.ones(1, 1, 1),
-            ).to(device=self.device)
+                # TODO - check if dtype is correct here
+            ).to(device=self.device, dtype=self.conds.t3.speaker_emb.dtype)
 
         # Norm and tokenize text
         text = punc_norm(text)
@@ -266,6 +268,7 @@ class ChatterboxTTS:
                 repetition_penalty=repetition_penalty,
                 min_p=min_p,
                 top_p=top_p,
+                **t3_params,
             )
 
             
