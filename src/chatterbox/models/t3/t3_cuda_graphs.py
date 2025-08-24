@@ -1,13 +1,22 @@
 import torch
-from typing import Optional, Tuple, Callable, Any
+from typing import Optional, Tuple, Callable, Any, Dict
+
+TOKEN_LIMIT = 1500
+
+
+def get_next_bucket(
+    seq_len: int, bucket_size: int = 250, max_bucket: int = TOKEN_LIMIT
+) -> int:
+    bucket = ((seq_len - 1) // bucket_size + 1) * bucket_size
+    return min(bucket, max_bucket)
 
 
 class T3StepCUDAGraphWrapper:
     """
-    A wrapper class that automatically captures and replays CUDA graphs for optimized inference.
+    A wrapper class that automatically captures and replays CUDA graphs for optimized inference
+    with support for bucketing to handle dynamic max_position values.
 
-    The graph is captured on the first call and subsequent calls replay the captured graph
-    for improved performance.
+    Maintains separate graphs for different bucket sizes while sharing kv_cache and memory.
     """
 
     def __init__(
@@ -20,44 +29,33 @@ class T3StepCUDAGraphWrapper:
         top_p_warper: Any,
     ):
         """
-        Initialize the CUDA graph wrapper.
+        Initialize the CUDA graph wrapper with bucketing support.
 
         Args:
             generate_token: The function to wrap with CUDA graph
             patched_model: The model instance
-            kv_cache: The key-value cache
+            kv_cache: The key-value cache (shared across all buckets)
             repetition_penalty_processor: Repetition penalty processor
             min_p_warper: Min-p warper
             top_p_warper: Top-p warper
         """
         self.generate_token = generate_token
         self.patched_model = patched_model
-        self.kv_cache = kv_cache
+        self.kv_cache = kv_cache  # Shared across all buckets
         self.repetition_penalty_processor = repetition_penalty_processor
         self.min_p_warper = min_p_warper
         self.top_p_warper = top_p_warper
 
-        # Graph state
-        self._graph = None
-        self._is_captured = False
+        # Dictionary to store graphs and static tensors for each bucket
+        self._bucket_graphs: Dict[int, torch.cuda.CUDAGraph] = {}
+        self._bucket_static_tensors: Dict[int, dict] = {}
 
-        # Static tensors (will be set during capture)
-        self._static_speech_embedding_cache = None
-        self._static_output_logits = None
-        self._static_i_tensor = None
-        self._static_batch_idx = None
-        self._static_speech_pos_embedding_cache = None
-        self._static_generated_ids = None
-        self._static_cfg_weight = None
-        self._static_temperature = None
-        self._static_stride_length = None
+        # Track which buckets have been captured
+        self._captured_buckets = set()
 
-        # Output tensors
-        self._static_out_1 = None
-        self._static_out_2 = None
-
-    def _capture_graph(
+    def _capture_graph_for_bucket(
         self,
+        bucket_key: int,
         speech_embedding_cache: torch.Tensor,
         output_logits: torch.Tensor,
         i_tensor: torch.Tensor,
@@ -69,42 +67,55 @@ class T3StepCUDAGraphWrapper:
         stride_length: int,
         max_position: Optional[int] = None,
     ) -> None:
-        """Capture the CUDA graph with the provided tensors."""
-        self._graph = torch.cuda.CUDAGraph()
+        """Capture the CUDA graph for a specific bucket."""
+        print(
+            f"Capturing CUDA graph for bucket {bucket_key} (max_position: {max_position})"
+        )
 
-        # Clone static tensors
-        self._static_speech_embedding_cache = speech_embedding_cache.clone()
-        self._static_output_logits = output_logits
-        self._static_i_tensor = i_tensor.clone()
-        self._static_batch_idx = batch_idx.clone()
-        self._static_speech_pos_embedding_cache = speech_pos_embedding_cache.clone()
-        self._static_generated_ids = generated_ids
-        self._static_cfg_weight = cfg_weight
-        self._static_temperature = temperature
-        self._static_stride_length = stride_length
-        self._static_max_position = max_position
+        # Create new graph for this bucket
+        self._bucket_graphs[bucket_key] = torch.cuda.CUDAGraph()
 
+        # Initialize static tensors dictionary for this bucket
+        static_tensors = {}
+
+        # Clone static tensors for this bucket
+        static_tensors["speech_embedding_cache"] = speech_embedding_cache.clone()
+        static_tensors["output_logits"] = output_logits.clone()
+        static_tensors["i_tensor"] = i_tensor.clone()
+        static_tensors["batch_idx"] = batch_idx.clone()
+        static_tensors["speech_pos_embedding_cache"] = (
+            speech_pos_embedding_cache.clone()
+        )
+        static_tensors["generated_ids"] = generated_ids
+        static_tensors["cfg_weight"] = cfg_weight
+        static_tensors["temperature"] = temperature
+        static_tensors["stride_length"] = stride_length
+        static_tensors["max_position"] = bucket_key
+
+        # Capture the graph
         with torch.inference_mode():
-            with torch.cuda.graph(self._graph):
-                self._static_out_1, self._static_out_2 = self.generate_token(
-                    self._static_speech_embedding_cache,
-                    self._static_output_logits,
-                    self._static_i_tensor,
-                    self._static_batch_idx,
-                    self._static_speech_pos_embedding_cache,
-                    self._static_generated_ids,
-                    self._static_cfg_weight,
-                    self._static_temperature,
+            with torch.cuda.graph(self._bucket_graphs[bucket_key]):
+                static_tensors["out_1"], static_tensors["out_2"] = self.generate_token(
+                    static_tensors["speech_embedding_cache"],
+                    static_tensors["output_logits"],
+                    static_tensors["i_tensor"],
+                    static_tensors["batch_idx"],
+                    static_tensors["speech_pos_embedding_cache"],
+                    static_tensors["generated_ids"],
+                    static_tensors["cfg_weight"],
+                    static_tensors["temperature"],
                     self.repetition_penalty_processor,
                     self.min_p_warper,
                     self.top_p_warper,
                     self.patched_model,
-                    self.kv_cache,
-                    self._static_stride_length,
-                    self._static_max_position,
+                    self.kv_cache,  # Shared kv_cache
+                    static_tensors["stride_length"],
+                    static_tensors["max_position"],
                 )
 
-        self._is_captured = True
+        # Store static tensors for this bucket
+        self._bucket_static_tensors[bucket_key] = static_tensors
+        self._captured_buckets.add(bucket_key)
 
     def __call__(
         self,
@@ -124,33 +135,13 @@ class T3StepCUDAGraphWrapper:
         stride_length: int = 1,
         max_position: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Execute the wrapped function with CUDA graph optimization.
+        # Determine which bucket to use
+        bucket_key = max_position or TOKEN_LIMIT
 
-        On first call, captures the graph. Subsequent calls replay the captured graph.
-
-        Args:
-            speech_embedding_cache: Speech embedding cache tensor
-            output_logits: Output logits tensor
-            i_tensor: Index tensor
-            batch_idx: Batch index tensor
-            speech_pos_embedding_cache: Speech position embedding cache tensor
-            generated_ids: Generated IDs tensor
-            cfg_weight: Configuration weight
-            temperature: Temperature value
-            repetition_penalty_processor: Repetition penalty processor (ignored after capture)
-            min_p_warper: Min-p warper (ignored after capture)
-            top_p_warper: Top-p warper (ignored after capture)
-            patched_model: Model instance (ignored after capture)
-            kv_cache: Key-value cache (ignored after capture)
-            stride_length: Stride length
-
-        Returns:
-            Tuple of output tensors from the wrapped function
-        """
-        if not self._is_captured:
-            # First run: capture the graph
-            self._capture_graph(
+        # Check if we need to capture a graph for this bucket
+        if bucket_key not in self._captured_buckets:
+            self._capture_graph_for_bucket(
+                bucket_key,
                 speech_embedding_cache,
                 output_logits,
                 i_tensor,
@@ -163,40 +154,48 @@ class T3StepCUDAGraphWrapper:
                 max_position,
             )
         else:
-            # Subsequent runs: update static tensors and replay
-            self._static_speech_embedding_cache.copy_(speech_embedding_cache)
-            self._static_output_logits.copy_(output_logits)
-            self._static_i_tensor.copy_(i_tensor)
-            self._static_batch_idx.copy_(batch_idx)
-            self._static_speech_pos_embedding_cache.copy_(speech_pos_embedding_cache)
-            self._static_generated_ids.copy_(generated_ids)
-            self._static_cfg_weight = cfg_weight
-            self._static_temperature = temperature
-            self._static_stride_length = stride_length
-            self._static_max_position = max_position
+            # Update static tensors for this bucket and replay
+            static_tensors = self._bucket_static_tensors[bucket_key]
 
-            # Replay the graph
-            self._graph.replay()
+            static_tensors["speech_embedding_cache"].copy_(speech_embedding_cache)
+            static_tensors["output_logits"].copy_(output_logits)
+            static_tensors["i_tensor"].copy_(i_tensor)
+            static_tensors["batch_idx"].copy_(batch_idx)
+            static_tensors["speech_pos_embedding_cache"].copy_(
+                speech_pos_embedding_cache
+            )
+            static_tensors["generated_ids"].copy_(generated_ids)
+            static_tensors["cfg_weight"] = cfg_weight
+            static_tensors["temperature"] = temperature
+            static_tensors["stride_length"] = stride_length
+            static_tensors["max_position"] = max_position
 
-        return self._static_out_1, self._static_out_2
+            # Replay the graph for this bucket
+            self._bucket_graphs[bucket_key].replay()
 
-    def is_captured(self) -> bool:
-        """Check if the CUDA graph has been captured."""
-        return self._is_captured
+        # Return outputs from the appropriate bucket
+        static_tensors = self._bucket_static_tensors[bucket_key]
+        return (
+            static_tensors["out_1"],
+            static_tensors["out_2"],
+            static_tensors["generated_ids"],
+        )
 
-    def reset(self) -> None:
-        """Reset the wrapper, forcing graph recapture on next call."""
-        self._graph = None
-        self._is_captured = False
-        self._static_speech_embedding_cache = None
-        self._static_output_logits = None
-        self._static_i_tensor = None
-        self._static_batch_idx = None
-        self._static_speech_pos_embedding_cache = None
-        self._static_generated_ids = None
-        self._static_cfg_weight = None
-        self._static_temperature = None
-        self._static_stride_length = None
-        self._static_out_1 = None
-        self._static_out_2 = None
-        self._static_max_position = None
+    def reset(self, bucket_key: Optional[int] = None) -> None:
+        if bucket_key is not None:
+            # Reset specific bucket
+            if bucket_key in self._bucket_graphs:
+                del self._bucket_graphs[bucket_key]
+            if bucket_key in self._bucket_static_tensors:
+                del self._bucket_static_tensors[bucket_key]
+            self._captured_buckets.discard(bucket_key)
+            print(f"Reset bucket {bucket_key}")
+        else:
+            # Reset all buckets
+            self._bucket_graphs.clear()
+            self._bucket_static_tensors.clear()
+            self._captured_buckets.clear()
+            print("Reset all buckets")
+
+    def mark_new_generation(self):
+        self.kv_cache.reset()
