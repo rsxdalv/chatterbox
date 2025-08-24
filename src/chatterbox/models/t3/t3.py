@@ -498,10 +498,10 @@ class T3(nn.Module):
                 if (generated_ids == stop_token_tensor).any():
                     if benchmark_t3:
                         torch.cuda.synchronize() # For benchmarking to have correct it/s
-                    print(f"Stopping at {(i + 1) * stride_length} because EOS token was generated")
-                    print(f"Generated {(i + 1) * stride_length} tokens in {time.time() - start:.2f} seconds")
-                    # it/s
-                    print(f"{(i + 1) * stride_length / (time.time() - start):.2f} it/s")
+                        print(f"Stopping at {(i + 1) * stride_length} because EOS token was generated")
+                        print(f"Generated {(i + 1) * stride_length} tokens in {time.time() - start:.2f} seconds")
+                        # it/s
+                        print(f"{(i + 1) * stride_length / (time.time() - start):.2f} it/s")
                     break
 
             # print(kv_cache.get_seq_length().unsqueeze(0))
@@ -533,9 +533,9 @@ class T3(nn.Module):
             if i == max_new_tokens // stride_length - 1:
                 if benchmark_t3:
                     torch.cuda.synchronize() # For benchmarking to have correct it/s
-                print(f"Stopping at {(i + 1) * stride_length} because max_new_tokens reached")
-                print(f"Generated {(i + 1) * stride_length} tokens in {time.time() - start:.2f} seconds")
-                print(f"{(i + 1) * stride_length / (time.time() - start):.2f} it/s")
+                    print(f"Stopping at {(i + 1) * stride_length} because max_new_tokens reached")
+                    print(f"Generated {(i + 1) * stride_length} tokens in {time.time() - start:.2f} seconds")
+                    print(f"{(i + 1) * stride_length / (time.time() - start):.2f} it/s")
 
         return generated_ids
 
