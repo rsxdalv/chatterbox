@@ -338,7 +338,7 @@ class T3(nn.Module):
         # optimizations
         max_cache_len=None,
         initial_forward_pass_backend="eager",
-        generate_token_backend="cudagraphs-strided",
+        generate_token_backend="cudagraphs-manual",
         stride_length=4,
         skip_when_1=True,
         benchmark_t3=False,
