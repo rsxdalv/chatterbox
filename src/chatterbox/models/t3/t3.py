@@ -80,7 +80,11 @@ class T3(nn.Module):
 
     @property
     def device(self):
-        return self.speech_head.weight.device
+        return self.speech_emb.weight.device
+
+    @property
+    def dtype(self):
+        return self.speech_emb.weight.dtype
 
     def to(self, *args, **kwargs):
         self.min_p_warper.min_p = self.min_p_warper.min_p.to(*args, **kwargs)
@@ -107,6 +111,8 @@ class T3(nn.Module):
         speech_tokens: torch.LongTensor,
         cfg_weight: float = 0.0,
     ):
+        if self.dtype != t3_cond.speaker_emb.dtype:
+            t3_cond.to(dtype=self.dtype)
         # prepare input embeddings (skip backbone tranformer embeddings)
         cond_emb = self.prepare_conditioning(t3_cond)  # (B, len_cond, dim)
         text_emb = self.text_emb(text_tokens)  # (B, len_text, dim)
@@ -484,6 +490,8 @@ class T3(nn.Module):
                 self.min_p_warper,
                 self.top_p_warper,
             )
+
+        self.cudagraph_wrapper.guard()
 
         _generate_token_variants["cudagraphs-manual"] = self.cudagraph_wrapper
         generate_token = _generate_token_variants.get(generate_token_backend, _generate_token_variants["eager"])

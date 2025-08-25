@@ -53,6 +53,15 @@ class T3StepCUDAGraphWrapper:
         # Track which buckets have been captured
         self._captured_buckets = set()
 
+        self.dtype = patched_model.dtype
+
+    def guard(self):
+        """
+        Validate critical parameters have not changed, such as effective batch size or dtype.
+        """
+        assert self.patched_model.dtype == self.dtype
+        pass
+
     def _capture_graph_for_bucket(
         self,
         bucket_key: int,
