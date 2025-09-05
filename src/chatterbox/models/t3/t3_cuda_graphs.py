@@ -27,6 +27,7 @@ class T3StepCUDAGraphWrapper:
         repetition_penalty_processor: Any,
         min_p_warper: Any,
         top_p_warper: Any,
+        alignment_stream_analyzer: Any = None,
     ):
         """
         Initialize the CUDA graph wrapper with bucketing support.
@@ -54,6 +55,7 @@ class T3StepCUDAGraphWrapper:
         self._captured_buckets = set()
 
         self.dtype = patched_model.dtype
+        self.alignment_stream_analyzer = alignment_stream_analyzer
 
     def guard(self):
         """
@@ -120,6 +122,7 @@ class T3StepCUDAGraphWrapper:
                     self.kv_cache,  # Shared kv_cache
                     static_tensors["stride_length"],
                     static_tensors["max_position"],
+                    self.alignment_stream_analyzer,
                 )
 
         # Store static tensors for this bucket
@@ -143,6 +146,7 @@ class T3StepCUDAGraphWrapper:
         kv_cache: Any = None,
         stride_length: int = 1,
         max_position: Optional[int] = None,
+        alignment_stream_analyzer: Any = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Determine which bucket to use
         bucket_key = max_position or TOKEN_LIMIT
