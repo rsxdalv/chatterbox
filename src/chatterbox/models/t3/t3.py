@@ -4,6 +4,8 @@ import logging
 from typing import Union, Optional, List
 import time
 
+logger = logging.getLogger(__name__)
+
 from tqdm import tqdm
 import torch
 import torch.nn.functional as F
@@ -20,6 +22,7 @@ from .modules.t3_config import T3Config
 from .llama_configs import LLAMA_CONFIGS
 from .inference.t3_hf_backend import T3HuggingfaceBackend
 from .inference.alignment_stream_analyzer import AlignmentStreamAnalyzer
+from ..utils import AttrDict
 
 from .fast_min_p_warper import FastMinPLogitsWarper
 from .fast_top_p_warper import FastTopPLogitsWarper
@@ -28,12 +31,6 @@ from .t3_cuda_graphs import T3StepCUDAGraphWrapper, get_next_bucket
 logger = logging.getLogger(__name__)
 
 TOKEN_LIMIT = 1500
-
-class AttrDict(dict):
-    def __init__(self, *args, **kwargs):
-        super(AttrDict, self).__init__(*args, **kwargs)
-        self.__dict__ = self
-
 
 def _ensure_BOT_EOT(text_tokens: Tensor, hp):
     B = text_tokens.size(0)
@@ -51,7 +48,9 @@ class T3(nn.Module):
             different PE embedding space for speech.
     """
 
-    def __init__(self, hp=T3Config()):
+    def __init__(self, hp=None):
+        if hp is None:
+            hp = T3Config.english_only()  # Default to English-only config for backward compatibility
         super().__init__()
         self.hp = hp
         self.cfg = LlamaConfig(**LLAMA_CONFIGS[hp.llama_config_name])
@@ -228,23 +227,28 @@ class T3(nn.Module):
 
         return loss_text, loss_speech
 
-    def init_patched_model(self):
+    def init_patched_model(self, len_cond=0, text_tokens=None):
         # TODO? synchronize the expensive compile function
         # with self.compile_lock:
         if not self.compiled:
-            # alignment_stream_analyzer = AlignmentStreamAnalyzer(
-            #     self.tfmr,
-            #     None,
-            #     text_tokens_slice=(len_cond, len_cond + text_tokens.size(-1)),
-            #     alignment_layer_idx=9, # TODO: hparam or something?
-            #     eos_idx=self.hp.stop_speech_token,
-            # )
+            # Default to None for English models, only create for multilingual
+            alignment_stream_analyzer = None
+            if self.hp.is_multilingual:
+                alignment_stream_analyzer = AlignmentStreamAnalyzer(
+                    self.tfmr,
+                    None,
+                    text_tokens_slice=(len_cond, len_cond + text_tokens.size(-1)),
+                    alignment_layer_idx=9, # TODO: hparam or something?
+                    eos_idx=self.hp.stop_speech_token,
+                )
+                assert alignment_stream_analyzer.eos_idx == self.hp.stop_speech_token
+
             patched_model = T3HuggingfaceBackend(
                 config=self.cfg,
                 llama=self.tfmr,
                 speech_enc=self.speech_emb,
                 speech_head=self.speech_head,
-                # alignment_stream_analyzer=alignment_stream_analyzer,
+                alignment_stream_analyzer=alignment_stream_analyzer,
             )
             self.patched_model = patched_model
             self.compiled = True
@@ -372,7 +376,7 @@ class T3(nn.Module):
 
         # In order to use the standard HF generate method, we need to extend some methods to inject our custom logic
         # Note the llama-specific logic. Other tfmr types can be added later.
-        self.init_patched_model()
+        self.init_patched_model(len_cond=len_cond, text_tokens=text_tokens)
         # Pre-compute embeddings cache for the generation loop
         self.get_speech_pos_embedding_cache(TOKEN_LIMIT + 1 or self.hp.max_speech_tokens, dtype=embeds.dtype)
         self.init_speech_embedding_cache(vocab_size=self.hp.speech_tokens_dict_size, dtype=embeds.dtype)
@@ -387,7 +391,7 @@ class T3(nn.Module):
         #     max_new_tokens=max_new_tokens or self.hp.max_speech_tokens,
         #     num_return_sequences=num_return_sequences,
         #     temperature=temperature,
-        #     top_p=top_p,
+        #     min_p=min_p,
         #     length_penalty=length_penalty,
         #     repetition_penalty=repetition_penalty,
         #     do_sample=do_sample,
@@ -403,11 +407,8 @@ class T3(nn.Module):
         # batch_size=2 for CFG
         bos_embed = torch.cat([bos_embed, bos_embed])
 
-        # Combine condition and BOS token for the initial input if cfg_weight > 0
-        if cfg_weight > 0:
-            inputs_embeds = torch.cat([embeds, bos_embed], dim=1)
-        else:
-            inputs_embeds = embeds
+        # Combine condition and BOS token for the initial input
+        inputs_embeds = torch.cat([embeds, bos_embed], dim=1)
 
         # Track generated token ids; start with the BOS token.
         PAD_TOKEN_ID = self.hp.stop_speech_token + 1 # Assuming unused
@@ -532,6 +533,7 @@ class T3(nn.Module):
                 kv_cache,
                 stride_length,
                 max_position=max_position,
+                alignment_stream_analyzer=self.patched_model.alignment_stream_analyzer,
             )
             output_logits = outputs[1]
             if len(outputs) == 3:
@@ -587,7 +589,8 @@ def generate_t3_token(
     patched_model: T3HuggingfaceBackend,
     kv_cache: StaticCache,
     stride_length: int = 0, # for API simplicity
-    max_position: Optional[int] = None
+    max_position: Optional[int] = None,
+    alignment_stream_analyzer: Optional[AlignmentStreamAnalyzer] = None
 ):
     logits = output_logits[:, -1, :]
 
@@ -599,12 +602,19 @@ def generate_t3_token(
 
     logits = logits.squeeze(1)
 
-    # Apply temperature scaling.
+    # Apply alignment stream analyzer integrity checks
+    if alignment_stream_analyzer is not None:
+        if logits.dim() == 1:            # guard in case something upstream squeezed
+            logits = logits.unsqueeze(0) # (1, V)
+        # Pass the last generated token for repetition tracking
+        last_token = generated_ids[0, -1].item() if len(generated_ids[0]) > 0 else None
+        logits = alignment_stream_analyzer.step(logits, next_token=last_token)  # (1, V)
+
+    logits = repetition_penalty_processor(generated_ids, logits)
+
     if temperature != 1.0:
         logits = logits / temperature
 
-    # Apply repetition penalty and top‑p filtering.
-    logits = repetition_penalty_processor(generated_ids, logits)
     logits = min_p_warper(None, logits)
     logits = top_p_warper(None, logits)
 
@@ -649,7 +659,8 @@ def generate_t3_tokens_strided(
     patched_model: T3HuggingfaceBackend,
     kv_cache: StaticCache,
     stride_length: int,
-    max_position: Optional[int] = None
+    max_position: Optional[int] = None,
+    alignment_stream_analyzer: Optional[AlignmentStreamAnalyzer] = None
 ):
     for i in range(stride_length):
         next_token, output_logits = generate_t3_token(
@@ -667,6 +678,8 @@ def generate_t3_tokens_strided(
             patched_model,
             kv_cache,
             stride_length,
+            # max_position=max_position, # only use for cudagraphs-manual
+            alignment_stream_analyzer=alignment_stream_analyzer
         )
         output_logits = output_logits.clone()
     return next_token, output_logits
