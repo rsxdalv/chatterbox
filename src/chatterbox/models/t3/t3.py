@@ -227,28 +227,28 @@ class T3(nn.Module):
 
         return loss_text, loss_speech
 
-    def init_patched_model(self, len_cond=0, text_tokens=None):
+    def init_patched_model(self, len_cond=34, text_tokens_size=153):
         # TODO? synchronize the expensive compile function
         # with self.compile_lock:
         if not self.compiled:
             # Default to None for English models, only create for multilingual
-            alignment_stream_analyzer = None
-            if self.hp.is_multilingual:
-                alignment_stream_analyzer = AlignmentStreamAnalyzer(
-                    self.tfmr,
-                    None,
-                    text_tokens_slice=(len_cond, len_cond + text_tokens.size(-1)),
-                    alignment_layer_idx=9, # TODO: hparam or something?
-                    eos_idx=self.hp.stop_speech_token,
-                )
-                assert alignment_stream_analyzer.eos_idx == self.hp.stop_speech_token
+            # alignment_stream_analyzer = None
+            # if self.hp.is_multilingual:
+            #     alignment_stream_analyzer = AlignmentStreamAnalyzer(
+            #         self.tfmr,
+            #         None,
+            #         text_tokens_slice=(len_cond, len_cond + text_tokens_size),
+            #         alignment_layer_idx=9, # TODO: hparam or something?
+            #         eos_idx=self.hp.stop_speech_token,
+            #     )
+            #     assert alignment_stream_analyzer.eos_idx == self.hp.stop_speech_token
 
             patched_model = T3HuggingfaceBackend(
                 config=self.cfg,
                 llama=self.tfmr,
                 speech_enc=self.speech_emb,
                 speech_head=self.speech_head,
-                alignment_stream_analyzer=alignment_stream_analyzer,
+                # alignment_stream_analyzer=alignment_stream_analyzer,
             )
             self.patched_model = patched_model
             self.compiled = True
@@ -346,9 +346,10 @@ class T3(nn.Module):
         repetition_penalty=1.2,
         cfg_weight=0,
         # optimizations
-        max_cache_len=None,
+        max_cache_len=1500,
         initial_forward_pass_backend="eager",
         generate_token_backend="cudagraphs-manual",
+        # generate_token_backend="eager",
         stride_length=4,
         skip_when_1=True,
         benchmark_t3=False,
@@ -376,7 +377,7 @@ class T3(nn.Module):
 
         # In order to use the standard HF generate method, we need to extend some methods to inject our custom logic
         # Note the llama-specific logic. Other tfmr types can be added later.
-        self.init_patched_model(len_cond=len_cond, text_tokens=text_tokens)
+        self.init_patched_model(len_cond=len_cond, text_tokens_size=text_tokens.size(-1))
         # Pre-compute embeddings cache for the generation loop
         self.get_speech_pos_embedding_cache(TOKEN_LIMIT + 1 or self.hp.max_speech_tokens, dtype=embeds.dtype)
         self.init_speech_embedding_cache(vocab_size=self.hp.speech_tokens_dict_size, dtype=embeds.dtype)
@@ -480,7 +481,7 @@ class T3(nn.Module):
         ).clone()  # Clone to avoid in-place modification issues
 
 
-        indices = torch.arange(1, max_new_tokens + 1, device='cuda')
+        indices = torch.arange(1, max_new_tokens + 1, device=generated_ids.device)
         batch_idx = torch.zeros(1, dtype=torch.long, device=generated_ids.device)
         if not hasattr(self, "cudagraph_wrapper"):
             self.cudagraph_wrapper = T3StepCUDAGraphWrapper(
@@ -608,6 +609,7 @@ def generate_t3_token(
             logits = logits.unsqueeze(0) # (1, V)
         # Pass the last generated token for repetition tracking
         last_token = generated_ids[0, -1].item() if len(generated_ids[0]) > 0 else None
+        print(logits, last_token)
         logits = alignment_stream_analyzer.step(logits, next_token=last_token)  # (1, V)
 
     logits = repetition_penalty_processor(generated_ids, logits)

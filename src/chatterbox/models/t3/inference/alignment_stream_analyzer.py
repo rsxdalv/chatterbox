@@ -91,6 +91,12 @@ class AlignmentStreamAnalyzer:
         Emits an AlignmentAnalysisResult into the output queue, and potentially modifies the logits to force an EOS.
         """
         # extract approximate alignment matrix chunk (1 frame at a time after the first chunk)
+        print(
+            f"AlignmentStreamAnalyzer: curr_frame_pos={self.curr_frame_pos}, "
+            f"text_position={self.text_position}, "
+            f"text_tokens_slice={self.text_tokens_slice}, "
+            f"last_aligned_attns={[a.shape if a is not None else None for a in self.last_aligned_attns]}"
+        )
         aligned_attn = torch.stack(self.last_aligned_attns).mean(dim=0) # (N, N)
         i, j = self.text_tokens_slice
         if self.curr_frame_pos == 0:

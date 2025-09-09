@@ -209,15 +209,11 @@ class ChatterboxTTS:
     def generate(
         self,
         text,
+        language_id, # for API compatibility; not used in this model
         audio_prompt_path=None,
         exaggeration=0.5,
         cfg_weight=0.5,
         temperature=0.8,
-        # stream - left for API compatibility
-        tokens_per_slice=None,
-        remove_milliseconds=None,
-        remove_milliseconds_start=None,
-        chunk_overlap_method=None,
         # cache optimization params
         max_new_tokens=1000, 
         max_cache_len=1500, # Affects the T3 speed, hence important
@@ -227,9 +223,6 @@ class ChatterboxTTS:
         top_p=1.0,
         t3_params={},
     ):
-        if tokens_per_slice is not None or remove_milliseconds is not None or remove_milliseconds_start is not None or chunk_overlap_method is not None:
-            print("Streaming by token slices has been discontinued due to audio clipping. Continuing with full generation.")
-
         if audio_prompt_path:
             self.prepare_conditionals(audio_prompt_path, exaggeration=exaggeration)
         else:
@@ -292,10 +285,14 @@ class ChatterboxTTS:
 
                 # speech_tokens = speech_tokens[speech_tokens < 6561]
                 speech_tokens = drop_bad_tokens(speech_tokens)
+                import time
+                start = time.time()
                 wav, _ = self.s3gen.inference(
                     speech_tokens=speech_tokens,
                     ref_dict=self.conds.gen,
                 )
+                end = time.time()
+                print(f"S3Gen inference time: {end - start:.2f} seconds")
                 wav = wav.squeeze(0).detach().cpu().numpy()
                 watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
                 return torch.from_numpy(watermarked_wav).unsqueeze(0)
