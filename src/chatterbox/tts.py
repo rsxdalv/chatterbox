@@ -202,7 +202,7 @@ class ChatterboxTTS:
         t3_cond = T3Cond(
             speaker_emb=ve_embed,
             cond_prompt_speech_tokens=t3_cond_prompt_tokens,
-            emotion_adv=exaggeration * torch.ones(1, 1, 1),
+            emotion_adv=exaggeration * torch.ones(1, 1, 1, dtype=ve_embed.dtype),
         ).to(device=self.device)
         self.conds = Conditionals(t3_cond, s3gen_ref_dict)
 
@@ -234,9 +234,8 @@ class ChatterboxTTS:
             self.conds.t3 = T3Cond(
                 speaker_emb=_cond.speaker_emb,
                 cond_prompt_speech_tokens=_cond.cond_prompt_speech_tokens,
-                emotion_adv=exaggeration * torch.ones(1, 1, 1),
-                # TODO - check if dtype is correct here
-            ).to(device=self.device, dtype=self.conds.t3.speaker_emb.dtype)
+                emotion_adv=exaggeration * torch.ones(1, 1, 1, dtype=_cond.speaker_emb.dtype),
+            ).to(device=self.device)
 
         # Norm and tokenize text
         text = punc_norm(text)
