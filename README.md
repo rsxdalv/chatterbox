@@ -1,6 +1,5 @@
 
-<img width="1200" alt="Chatterbox Multilingual" src="https://github.com/user-attachments/assets/53b411b4-d7b8-4b18-87f3-335145837684" />
-
+<img width="1200" height="600" alt="Chatterbox-Multilingual" src="https://www.resemble.ai/wp-content/uploads/2025/09/Chatterbox-Multilingual-1.png" />
 
 # Chatterbox TTS
 
@@ -61,7 +60,7 @@ We developed and tested Chatterbox on Python 3.11 on Debian 11 OS; the versions 
 ```python
 import torchaudio as ta
 from chatterbox.tts import ChatterboxTTS
-
+from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
 # English example
 model = ChatterboxTTS.from_pretrained(device="cuda")
