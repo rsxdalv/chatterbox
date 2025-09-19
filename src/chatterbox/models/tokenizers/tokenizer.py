@@ -155,6 +155,52 @@ def korean_normalize(text: str) -> str:
     return result.strip()
 
 
+FRENCH_DECOMPOSE_MAP = {
+    # Lowercase
+    "à": "a\u0300",  # a grave
+    "â": "a\u0302",  # a circumflex
+    "ä": "a\u0308",  # a diaeresis
+    "é": "e\u0301",  # e acute
+    "è": "e\u0300",  # e grave
+    "ê": "e\u0302",  # e circumflex
+    "ë": "e\u0308",  # e diaeresis
+    "ï": "i\u0308",  # i diaeresis
+    "î": "i\u0302",  # i circumflex
+    "ô": "o\u0302",  # o circumflex
+    "ö": "o\u0308",  # o diaeresis
+    "ù": "u\u0300",  # u grave
+    "û": "u\u0302",  # u circumflex
+    "ü": "u\u0308",  # u diaeresis
+    "ç": "c\u0327",  # c cedilla
+    "ÿ": "y\u0308",  # y diaeresis (less common)
+    # Uppercase
+    "À": "A\u0300",
+    "Â": "A\u0302",
+    "Ä": "A\u0308",
+    "É": "E\u0301",
+    "È": "E\u0300",
+    "Ê": "E\u0302",
+    "Ë": "E\u0308",
+    "Ï": "I\u0308",
+    "Î": "I\u0302",
+    "Ô": "O\u0302",
+    "Ö": "O\u0308",
+    "Ù": "U\u0300",
+    "Û": "U\u0302",
+    "Ü": "U\u0308",
+    "Ç": "C\u0327",
+    "Ÿ": "Y\u0308",
+    # Ligatures (optional: map to plain letters for simpler pronunciation; adjust if TTS handles them well)
+    "œ": "oe",
+    "Œ": "OE",
+}
+
+
+def decompose_french_text(text): # Author: Diggy
+    """Replace all French special letters with decomposed forms"""
+    return "".join(FRENCH_DECOMPOSE_MAP.get(char, char) for char in text)
+
+
 class ChineseCangjieConverter:
     """Converts Chinese characters to Cangjie codes for tokenization."""
     
@@ -262,6 +308,8 @@ class MTLTokenizer:
             txt = add_hebrew_diacritics(txt)
         elif language_id == 'ko':
             txt = korean_normalize(txt)
+        elif language_id == 'fr': # Author: Rouxin  
+            txt = decompose_french_text(txt)
         
         # Prepend language token
         if language_id:
