@@ -209,7 +209,7 @@ class ChatterboxTTS:
     def generate(
         self,
         text,
-        language_id, # for API compatibility; not used in this model
+        language_id=None, # for API compatibility; not used in this model
         audio_prompt_path=None,
         exaggeration=0.5,
         cfg_weight=0.5,
