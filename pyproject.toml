@@ -1,6 +1,6 @@
 [project]
 name = "chatterbox-tts"
-version = "0.3.1"
+version = "0.4.0"
 description = "Chatterbox: Open Source TTS and Voice Conversion by Resemble AI"
 readme = "README.md"
 requires-python = ">=3.10"
