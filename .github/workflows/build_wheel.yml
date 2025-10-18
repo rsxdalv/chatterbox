@@ -1,0 +1,109 @@
+name: Build wheel
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.version_check.outputs.should_release }}
+      version: ${{ steps.version_check.outputs.version }}
+      tag: ${{ steps.version_check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - id: get_version
+        uses: rsxdalv/extract-python-version@v2
+
+      - id: version_check
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          TAG="v${VERSION}"
+          
+          if [ -z "$VERSION" ] || [ "$VERSION" = "0.0.0" ]; then
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          if git tag -l | grep -q "^${TAG}$"; then
+            echo "Tag $TAG already exists, skipping release"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+          else
+            echo "New version detected: $VERSION"
+            echo "should_release=true" >> $GITHUB_OUTPUT
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
+    permissions:
+      contents: write
+    strategy:
+      max-parallel: 4
+      matrix:
+        platform: [ubuntu-latest]
+        python-version: ["3.10"]
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - run: python -m build --wheel --outdir dist/
+
+      - run: du -h dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          path: dist/*.whl
+
+      - run: echo "wheel_name=$(basename dist/*.whl)" >> $GITHUB_ENV
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check.outputs.tag }}
+          name: Release ${{ needs.check.outputs.version }}
+          body: |
+            Automated release for version ${{ needs.check.outputs.version }}
+            
+            ## Changes
+            - Built wheel: ${{ env.wheel_name }}
+            
+            ## Installation
+            ```bash
+            pip install ${{ env.wheel_name }}
+            ```
+          files: dist/*.whl
+
+      - name: Upload to TestPyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
+        run: |
+          echo "Uploading to TestPyPI..."
+          python -m twine upload --repository testpypi dist/* --verbose
+
+      - name: Upload to PyPI (optional)
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          echo "Uploading to PyPI..."
+          python -m twine upload dist/*
