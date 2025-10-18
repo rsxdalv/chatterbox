@@ -1,6 +1,6 @@
 [project]
 name = "chatterbox-tts"
-version = "0.4.0"
+version = "0.4.1"
 description = "Chatterbox: Open Source TTS and Voice Conversion by Resemble AI"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,6 +28,10 @@ dependencies = [
     "spacy-pkuseg",
     "pykakasi==2.3.0",
     # "gradio==5.44.1",
+]
+
+[project.optional-dependencies]
+russian = [
     "russian-text-stresser @ git+https://github.com/Vuizur/add-stress-to-epub",
 ]
 
