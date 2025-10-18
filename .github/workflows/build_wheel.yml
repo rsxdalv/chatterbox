@@ -2,7 +2,7 @@ name: Build wheel
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, faster]
   workflow_dispatch:
 
 jobs:
